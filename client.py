@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %
 def main():
     metadata = Metadata('mazerunner.torrent')
     metadata.connectToTrackers()
-
+    metadata.connectToFirstPeer()
     print("HELOEOJFOJSFAOSJFOASJFOAJS")
 
 def connectionIdRequestMessage():
@@ -36,7 +36,7 @@ def announceRequestMessage(connection_id, info_hash):
         num_want = struct.pack('>i', -1)
         port = struct.pack('>h', 8000)
 
-        return connection_id+action+trans_id+info_hash.digest()+PEER_ID+downloaded+left+uploaded+event+ip+key+num_want+port, action, trans_id
+        return connection_id+action+trans_id+info_hash+PEER_ID+downloaded+left+uploaded+event+ip+key+num_want+port, action, trans_id
 
 def getPeersFromAnnounce(response, metadata):
     ipResponse = response[20:]
@@ -46,7 +46,7 @@ def getPeersFromAnnounce(response, metadata):
         chunk = ipResponse[i*6:i*6+6]
         ip = []
         for j in range(4):
-            #pdb.set_trace()
+            ##pdb.set_trace()
             ip.append(str(ord(chunk[j])))
         port = ord(chunk[4])*256+ord(chunk[5])
         ipString = '.'.join(ip)
@@ -94,6 +94,7 @@ def initUdpTracker(trackerUrl, info_hash, metadata):
     except:
         logging.debug("Error occured while connecting to host. Invalid hostname")
         return
+    #pdb.set_trace()
     conn = (ip, parsed.port)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(1)
@@ -107,6 +108,8 @@ def initUdpTracker(trackerUrl, info_hash, metadata):
         if response:
             logging.debug("Announce Sucessfull")
             getPeersFromAnnounce(response, metadata)
+            return True
+    return False
 
 
 
@@ -115,24 +118,67 @@ class Metadata:
     def __init__(self, torrentFileName):
         self.metadata = bencode.bdecode(open('mazerunner.torrent', 'rb').read())
         self.bencodedInfo = bencode.bencode(self.metadata['info'])
-        self.info_hash = hashlib.sha1(self.bencodedInfo)
+        self.info_hash = hashlib.sha1(self.bencodedInfo).digest()
         self.peers = []
 
     def addPeer(self, peer):
         self.peers.append(peer)
 
-
     def connectToTrackers(self):
         for tracker in self.metadata['announce-list']:
             tracker = tracker[0]
             if tracker.startswith('udp'):
-                initUdpTracker(tracker, self.info_hash, self)
+                if initUdpTracker(tracker, self.info_hash, self):
+                    break
+
+    def connectToFirstPeer(self):
+        #pdb.set_trace()
+        for peer in self.peers:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            try:
+                logging.debug("Connecting to peer with IP:%s Port:%d", peer.ip, peer.port)
+                sock.connect((peer.ip, peer.port))
+                sock.send(peer.createHanshakeMessage(self.info_hash))
+                data = sock.recv(2048)
+            except Exception as err:
+                logging.debug(err)
+                logging.debug('Timed out')
+            else:
+                logging.debug("Received Data: %s", data)
+                peer.parseHanshakeMessage(self.info_hash, data)
+            finally:
+                sock.close()
+
 
 
 class Peer:
     def __init__(self, ip, port):
         self.ip = ip
         self.port = port
+        self.am_choking = True
+        self.am_interested = False
+        self.peer_choking = True
+        self.peer_interested = False
+
+    def createHanshakeMessage(self, info_hash):
+        pstrlen = '\x13'
+        pstr = "BitTorrent protocol"
+        reserved = struct.pack('>Q', 0)
+        return pstrlen+pstr+reserved+info_hash+PEER_ID
+
+    def parseHanshakeMessage(self, info_hash, msg):
+        info_hash_received = msg[28:48]
+        peer_id_received = msg[48:48+len(PEER_ID)]
+        #pdb.set_trace()
+        logging.debug("Info hash received = %s", info_hash_received)
+        if info_hash_received == info_hash: #and peer_id_received == PEER_ID:  TODO: Figure out what the deal with the peer id is on the return
+            logging.debug("!!!!!!!!!!!!!!!!!!!Peer Verified!!!!!!!!!!!!!!!!!!!!!!!!")
+            return True
+        else:
+            logging.debug("Unable to verify peer")
+            return False
+
 
 if __name__ == "__main__": main()
 
